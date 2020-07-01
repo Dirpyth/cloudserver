@@ -1,7 +1,8 @@
 const assert = require('assert');
 const { errors } = require('arsenal');
+const moment = require('moment');
 
-
+const changeObjectLock = require('../../../../utilities/objectLock-util');
 const withV4 = require('../support/withV4');
 const BucketUtility = require('../../lib/utility/bucket-util');
 
@@ -439,6 +440,64 @@ describe('HEAD object, conditions', () => {
                 assert.strictEqual('WebsiteRedirectLocation' in data,
                   false, 'WebsiteRedirectLocation header is present.');
                 done();
+            });
+        });
+    });
+});
+
+describe('GET object with object lock', () => {
+    withV4(sigCfg => {
+        const bucket = 'bucket-with-lock';
+        const key = 'object-with-lock';
+        const formatDate = date => date.toString().slice(0, 20);
+        const mockDate = moment().add(1, 'days').toISOString();
+        const mockMode = 'GOVERNANCE';
+        let bucketUtil;
+        let s3;
+
+        before(done => {
+            bucketUtil = new BucketUtility('default', sigCfg);
+            s3 = bucketUtil.s3;
+            const params = {
+                Bucket: bucket,
+                Key: key,
+                ObjectLockRetainUntilDate: mockDate,
+                ObjectLockMode: mockMode,
+                ObjectLockLegalHoldStatus: 'ON',
+            };
+            s3.createBucket({ Bucket: bucket, ObjectLockEnabledForBucket: true }, err => {
+                assert.ifError(err);
+                s3.putObject(params, done);
+            });
+        });
+
+        after(done => s3.listObjects({ Bucket: bucket }, (err, res) => {
+            assert.ifError(err);
+            res.Contents.forEach(object => {
+                s3.deleteObject({
+                    Bucket: bucket,
+                    Key: object.Key,
+                }, done);
+            });
+        }));
+
+        it('should return object lock headers if set on the object', done => {
+            s3.getObject({ Bucket: bucket, Key: key }, (err, res) => {
+                assert.ifError(err);
+                assert.strictEqual(res.ObjectLockMode, mockMode);
+                const responseDate
+                    = formatDate(res.ObjectLockRetainUntilDate.toISOString());
+                const expectedDate = formatDate(mockDate);
+                assert.strictEqual(responseDate, expectedDate);
+                assert.strictEqual(res.ObjectLockLegalHoldStatus, 'ON');
+                const objectWithLock = [
+                    {
+                        bucket,
+                        key,
+                        versionId: res.VersionId,
+                    },
+                ];
+                changeObjectLock(objectWithLock, '', done);
             });
         });
     });
